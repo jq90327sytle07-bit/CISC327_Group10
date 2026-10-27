@@ -195,3 +195,65 @@ def test_incoming_and_outgoing_transactions_update_stock_and_history(client):
     history = history_response.get_json()
     assert [transaction["type"] for transaction in history] == ["IN", "OUT"]
     assert [transaction["quantity"] for transaction in history] == [7, 4]
+
+
+def test_transaction_for_unknown_product_is_rejected_without_history(client):
+    """A transaction cannot be recorded for a product that does not exist."""
+    response = create_transaction(
+        client,
+        product_id=999,
+        transaction_type="IN",
+        quantity=5,
+    )
+    assert response.status_code == 404
+    assert response.get_json() == {"error": "Product not found"}
+
+    history_response = client.get("/transactions")
+    assert history_response.status_code == 200
+    assert history_response.get_json() == []
+
+
+def test_invalid_transaction_type_preserves_stock_and_history(client):
+    """An unsupported movement type is rejected without changing inventory."""
+    product = create_product(client, quantity_on_hand=10)
+    product_id = product["id"]
+
+    response = create_transaction(
+        client,
+        product_id=product_id,
+        transaction_type="TRANSFER",
+        quantity=3,
+    )
+    assert response.status_code == 400
+    assert response.get_json() == {"error": "type must be IN or OUT"}
+
+    stock_response = client.get(f"/products/{product_id}/stock-level")
+    assert stock_response.status_code == 200
+    assert stock_response.get_json()["quantity_on_hand"] == 10
+
+    history_response = client.get("/transactions")
+    assert history_response.status_code == 200
+    assert history_response.get_json() == []
+
+
+def test_transaction_filter_by_product_returns_only_matching_history(client):
+    """The product_id query parameter should select that product's transactions."""
+    first_product = create_product(client, name="First", sku="FIRST-001")
+    second_product = create_product(client, name="Second", sku="SECOND-001")
+
+    first_transaction = create_transaction(
+        client,
+        product_id=first_product["id"],
+        transaction_type="IN",
+        quantity=5,
+    ).get_json()
+    create_transaction(
+        client,
+        product_id=second_product["id"],
+        transaction_type="OUT",
+        quantity=2,
+    )
+
+    response = client.get(f"/transactions?product_id={first_product['id']}")
+    assert response.status_code == 200
+    assert response.get_json() == [first_transaction]
