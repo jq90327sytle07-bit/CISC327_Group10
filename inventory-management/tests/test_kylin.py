@@ -25,6 +25,18 @@ def create_product(
     return response.get_json()
 
 
+def create_transaction(client, *, product_id, transaction_type, quantity, supplier_id=None):
+    """Record a stock transaction and return the response."""
+    payload = {
+        "product_id": product_id,
+        "type": transaction_type,
+        "quantity": quantity,
+    }
+    if supplier_id is not None:
+        payload["supplier_id"] = supplier_id
+    return client.post("/transactions", json=payload)
+
+
 def test_product_lifecycle_persists_and_updates_expected_fields(client):
     """A created product can be listed, viewed, updated, and queried for stock."""
     product = create_product(client)
@@ -106,3 +118,80 @@ def test_unknown_product_operations_return_clear_not_found_errors(client):
     delete_response = client.delete("/products/999")
     assert delete_response.status_code == 404
     assert delete_response.get_json() == {"error": "Product not found"}
+
+
+def test_low_stock_list_includes_boundary_and_excludes_healthy_stock(client):
+    """Products at or below the reorder level are identified as low stock."""
+    below = create_product(
+        client,
+        name="Below Threshold",
+        sku="LOW-001",
+        quantity_on_hand=2,
+        reorder_level=5,
+    )
+    at_boundary = create_product(
+        client,
+        name="At Threshold",
+        sku="LOW-002",
+        quantity_on_hand=5,
+        reorder_level=5,
+    )
+    healthy = create_product(
+        client,
+        name="Healthy Stock",
+        sku="OK-001",
+        quantity_on_hand=6,
+        reorder_level=5,
+    )
+
+    response = client.get("/products/low-stock")
+    assert response.status_code == 200
+    low_stock_products = response.get_json()
+    returned_ids = {product["id"] for product in low_stock_products}
+
+    assert returned_ids == {below["id"], at_boundary["id"]}
+    assert healthy["id"] not in returned_ids
+
+
+def test_incoming_and_outgoing_transactions_update_stock_and_history(client):
+    """A sequence of IN and OUT transactions produces the expected final stock."""
+    product = create_product(client, quantity_on_hand=10)
+    product_id = product["id"]
+
+    incoming_response = create_transaction(
+        client,
+        product_id=product_id,
+        transaction_type="IN",
+        quantity=7,
+    )
+    assert incoming_response.status_code == 201
+    incoming = incoming_response.get_json()
+    assert incoming["product_id"] == product_id
+    assert incoming["type"] == "IN"
+    assert incoming["quantity"] == 7
+
+    stock_after_in = client.get(f"/products/{product_id}/stock-level")
+    assert stock_after_in.status_code == 200
+    assert stock_after_in.get_json()["quantity_on_hand"] == 17
+
+    outgoing_response = create_transaction(
+        client,
+        product_id=product_id,
+        transaction_type="OUT",
+        quantity=4,
+    )
+    assert outgoing_response.status_code == 201
+    outgoing = outgoing_response.get_json()
+    assert outgoing["product_id"] == product_id
+    assert outgoing["type"] == "OUT"
+    assert outgoing["quantity"] == 4
+
+    final_stock = client.get(f"/products/{product_id}/stock-level")
+    assert final_stock.status_code == 200
+    assert final_stock.get_json()["quantity_on_hand"] == 13
+
+    history_response = client.get("/transactions")
+    assert history_response.status_code == 200
+    history = history_response.get_json()
+    assert [transaction["type"] for transaction in history] == ["IN", "OUT"]
+    assert [transaction["quantity"] for transaction in history] == [7, 4]
