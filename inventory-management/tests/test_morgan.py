@@ -129,3 +129,120 @@ def test_supplier_products(client):
     assert len(products) == 1
     assert products[0]["id"] == product_id
     assert products[0]["name"] == "Keyboard"
+
+
+def create_purchase_order_setup(client):
+    """Create a supplier and product for purchase-order tests."""
+    supplier = client.post("/suppliers", json={
+        "name": "Office Supply Company",
+        "contact_email": "orders@example.com"
+    }).get_json()
+
+    product = client.post("/products", json={
+        "name": "Office Chair",
+        "sku": "CHAIR-001",
+        "unit_price": 75,
+        "quantity_on_hand": 10,
+        "reorder_level": 3
+    }).get_json()
+
+    return supplier["id"], product["id"]
+
+
+def test_list_purchase_orders(client):
+    """Verify that created purchase orders appear in the list."""
+    assert client.get("/purchase-orders").get_json() == []
+
+    supplier_id, product_id = create_purchase_order_setup(client)
+
+    response = client.post("/purchase-orders", json={
+        "supplier_id": supplier_id,
+        "product_id": product_id,
+        "quantity_ordered": 5
+    })
+    assert response.status_code == 201
+
+    orders = client.get("/purchase-orders")
+    assert orders.status_code == 200
+    assert len(orders.get_json()) == 1
+    assert orders.get_json()[0]["quantity_ordered"] == 5
+
+
+def test_create_purchase_order(client):
+    """Verify a purchase order stores its supplier, product, and quantity."""
+    supplier_id, product_id = create_purchase_order_setup(client)
+
+    response = client.post("/purchase-orders", json={
+        "supplier_id": supplier_id,
+        "product_id": product_id,
+        "quantity_ordered": 8
+    })
+
+    assert response.status_code == 201
+    order = response.get_json()
+    assert order["supplier_id"] == supplier_id
+    assert order["product_id"] == product_id
+    assert order["quantity_ordered"] == 8
+    assert order["status"] == "pending"
+
+    # An unknown supplier should be rejected.
+    invalid = client.post("/purchase-orders", json={
+        "supplier_id": 999999,
+        "product_id": product_id,
+        "quantity_ordered": 8
+    })
+    assert invalid.status_code == 404
+
+
+def test_view_purchase_order(client):
+    """Verify an order can be retrieved using its ID."""
+    supplier_id, product_id = create_purchase_order_setup(client)
+
+    created = client.post("/purchase-orders", json={
+        "supplier_id": supplier_id,
+        "product_id": product_id,
+        "quantity_ordered": 6
+    }).get_json()
+
+    response = client.get(f"/purchase-orders/{created['id']}")
+
+    assert response.status_code == 200
+    assert response.get_json()["quantity_ordered"] == 6
+    assert response.get_json()["status"] == "pending"
+
+    # An unknown order should return 404.
+    missing = client.get("/purchase-orders/999999")
+    assert missing.status_code == 404
+
+
+def test_receive_purchase_order_updates_stock(client):
+    """Verify receiving an order records incoming stock and updates inventory."""
+    supplier_id, product_id = create_purchase_order_setup(client)
+
+    created = client.post("/purchase-orders", json={
+        "supplier_id": supplier_id,
+        "product_id": product_id,
+        "quantity_ordered": 5
+    }).get_json()
+
+    order_id = created["id"]
+
+    response = client.put(f"/purchase-orders/{order_id}/receive")
+    assert response.status_code == 200
+    assert response.get_json()["status"] == "received"
+    assert response.get_json()["received_date"] is not None
+
+    # Check that receiving the order creates an incoming transaction.
+    transactions = client.get("/transactions").get_json()
+    assert any(
+        t["product_id"] == product_id
+        and t["supplier_id"] == supplier_id
+        and t["type"] == "IN"
+        and t["quantity"] == 5
+        for t in transactions
+    )
+
+    # Stock should increase from 10 to 15 after receiving 5 units.
+    stock = client.get(f"/products/{product_id}/stock-level")
+    assert stock.status_code == 200
+    assert stock.get_json()["quantity_on_hand"] == 15
