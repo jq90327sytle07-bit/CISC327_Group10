@@ -257,3 +257,77 @@ def test_transaction_filter_by_product_returns_only_matching_history(client):
     response = client.get(f"/transactions?product_id={first_product['id']}")
     assert response.status_code == 200
     assert response.get_json() == [first_transaction]
+
+
+def _create_report_product(client, name, sku):
+    response = client.post("/products", json={
+        "name": name,
+        "sku": sku,
+        "unit_price": 10,
+        "quantity_on_hand": 20,
+        "reorder_level": 2,
+    })
+    assert response.status_code == 201
+    return response.get_json()
+
+
+def _record_report_transaction(client, product_id, tx_type, quantity):
+    response = client.post("/transactions", json={
+        "product_id": product_id,
+        "type": tx_type,
+        "quantity": quantity,
+    })
+    assert response.status_code == 201
+
+
+def test_fast_moving_report_aggregates_and_sorts(client):
+    """Sum outgoing quantities and rank by quantity, not transaction count."""
+    product_a = _create_report_product(client, "Keyboard", "REPORT-A")
+    product_b = _create_report_product(client, "Mouse", "REPORT-B")
+
+    _record_report_transaction(client, product_a["id"], "OUT", 3)
+    _record_report_transaction(client, product_a["id"], "OUT", 5)
+    _record_report_transaction(client, product_b["id"], "OUT", 10)
+
+    response = client.get("/reports/fast-moving-products")
+
+    assert response.status_code == 200
+    assert response.get_json() == [
+        {
+            "product_id": product_b["id"],
+            "product_name": "Mouse",
+            "total_outgoing": 10,
+        },
+        {
+            "product_id": product_a["id"],
+            "product_name": "Keyboard",
+            "total_outgoing": 8,
+        },
+    ]
+
+
+def test_fast_moving_report_excludes_incoming(client):
+    """Incoming quantities must not contribute to outgoing totals."""
+    product = _create_report_product(client, "Monitor", "REPORT-C")
+
+    _record_report_transaction(client, product["id"], "IN", 50)
+    _record_report_transaction(client, product["id"], "OUT", 2)
+
+    response = client.get("/reports/fast-moving-products")
+
+    assert response.status_code == 200
+    assert response.get_json() == [
+        {
+            "product_id": product["id"],
+            "product_name": "Monitor",
+            "total_outgoing": 2,
+        },
+    ]
+
+
+def test_fast_moving_report_returns_empty_list(client):
+    """Return an empty report when no transactions exist."""
+    response = client.get("/reports/fast-moving-products")
+
+    assert response.status_code == 200
+    assert response.get_json() == []
