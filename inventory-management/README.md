@@ -55,6 +55,22 @@ app working without a REST client, and calls the same in-memory store.
 | DELETE | `/suppliers/<id>` | Delete a supplier |
 | POST | `/transactions` | Record a stock movement (`product_id`, `type`: IN/OUT, `quantity`, optional `supplier_id`) |
 | GET | `/transactions?product_id=&supplier_id=` | Look up transactions |
+| GET | `/reports/fast-moving-products` | Rank current products by total outgoing quantity |
+
+## Fast-Moving Products Report
+
+GET /reports/fast-moving-products
+
+Returns current products with recorded OUT transactions, ranked by total
+outgoing quantity in descending order. Multiple OUT transactions for the
+same product are combined. IN transactions are excluded. Ties are ordered
+by product ID in ascending order.
+
+Each result contains product_id, product_name, and total_outgoing.
+Returns an empty list when no qualifying outgoing transactions exist.
+
+The report uses all transactions currently held in memory. Application
+data is cleared when the application restarts.
 
 ## Tests
 
