@@ -246,3 +246,75 @@ def test_receive_purchase_order_updates_stock(client):
     stock = client.get(f"/products/{product_id}/stock-level")
     assert stock.status_code == 200
     assert stock.get_json()["quantity_on_hand"] == 15
+
+
+def test_receiving_purchase_order_twice_does_not_duplicate_stock(client):
+    """Verify receiving the same order twice does not add stock twice."""
+    supplier_id, product_id = create_purchase_order_setup(client)
+
+    order = client.post("/purchase-orders", json={
+        "supplier_id": supplier_id,
+        "product_id": product_id,
+        "quantity_ordered": 5
+    }).get_json()
+
+    order_id = order["id"]
+
+    # First receipt should increase stock from 10 to 15.
+    first = client.put(f"/purchase-orders/{order_id}/receive")
+    assert first.status_code == 200
+
+    # Receiving the same order again should be rejected.
+    second = client.put(f"/purchase-orders/{order_id}/receive")
+    assert second.status_code == 400
+
+    # Stock must not increase a second time.
+    stock = client.get(f"/products/{product_id}/stock-level")
+    assert stock.status_code == 200
+    assert stock.get_json()["quantity_on_hand"] == 15
+
+    # Only one incoming transaction should have been recorded.
+    transactions = client.get("/transactions").get_json()
+    assert len(transactions) == 1
+    assert transactions[0]["type"] == "IN"
+    assert transactions[0]["quantity"] == 5
+
+
+def test_receiving_multiple_purchase_orders_accumulates_stock(client):
+    """Verify separate purchase orders correctly accumulate inventory."""
+    supplier_id, product_id = create_purchase_order_setup(client)
+
+    first_order = client.post("/purchase-orders", json={
+        "supplier_id": supplier_id,
+        "product_id": product_id,
+        "quantity_ordered": 5
+    }).get_json()
+
+    second_order = client.post("/purchase-orders", json={
+        "supplier_id": supplier_id,
+        "product_id": product_id,
+        "quantity_ordered": 8
+    }).get_json()
+
+    # Creating pending orders must not change stock.
+    before = client.get(f"/products/{product_id}/stock-level")
+    assert before.get_json()["quantity_on_hand"] == 10
+
+    # Receive the first order: 10 + 5 = 15.
+    first = client.put(f"/purchase-orders/{first_order['id']}/receive")
+    assert first.status_code == 200
+
+    middle = client.get(f"/products/{product_id}/stock-level")
+    assert middle.get_json()["quantity_on_hand"] == 15
+
+    # Receive the second order: 15 + 8 = 23.
+    second = client.put(f"/purchase-orders/{second_order['id']}/receive")
+    assert second.status_code == 200
+
+    after = client.get(f"/products/{product_id}/stock-level")
+    assert after.get_json()["quantity_on_hand"] == 23
+
+    # Each received order should create its own incoming transaction.
+    transactions = client.get("/transactions").get_json()
+    assert len(transactions) == 2
+    assert sorted(t["quantity"] for t in transactions) == [5, 8]
