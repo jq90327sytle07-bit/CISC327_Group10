@@ -56,6 +56,10 @@ app working without a REST client, and calls the same in-memory store.
 | POST | `/transactions` | Record a stock movement (`product_id`, `type`: IN/OUT, `quantity`, optional `supplier_id`) |
 | GET | `/transactions?product_id=&supplier_id=` | Look up transactions |
 | GET | `/reports/fast-moving-products` | Rank current products by total outgoing quantity |
+| GET | `/purchase-orders` | List all purchase orders |
+| POST | `/purchase-orders` | Create a purchase order for a supplier and product |
+| GET | `/purchase-orders/<id>` | Get one purchase order |
+| PUT | `/purchase-orders/<id>/receive` | Receive a purchase order, record an incoming transaction, and automatically increase the product's stock quantity (FR-04); prevents duplicate receiving |
 
 ## Fast-Moving Products Report
 
