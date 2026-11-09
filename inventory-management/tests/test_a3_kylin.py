@@ -97,3 +97,48 @@ def test_delete_supplier_page_removes_supplier(client):
     page = client.get("/ui/suppliers")
     assert page.status_code == 200
     assert supplier["name"] not in page.get_data(as_text=True)
+def test_transaction_history_filters_by_supplier(client):
+    supplier_a = _create_a3_supplier(client)
+
+    supplier_response = client.post("/suppliers", json={
+        "name": "Other A3 Supplier",
+        "contact_email": "other@example.com",
+    })
+    assert supplier_response.status_code == 201
+    supplier_b = supplier_response.get_json()
+
+    product_response = client.post("/products", json={
+        "name": "A3 Keyboard",
+        "sku": "A3-FILTER-001",
+        "unit_price": 20,
+        "quantity_on_hand": 10,
+        "reorder_level": 2,
+    })
+    assert product_response.status_code == 201
+    product = product_response.get_json()
+
+    transactions = []
+    for supplier in (supplier_a, supplier_b):
+        response = client.post("/transactions", json={
+            "product_id": product["id"],
+            "supplier_id": supplier["id"],
+            "type": "IN",
+            "quantity": 3,
+        })
+        assert response.status_code == 201
+        transactions.append(response.get_json())
+
+    filtered = client.get(
+        f"/transactions?supplier_id={supplier_a['id']}"
+    )
+    assert filtered.status_code == 200
+    assert filtered.get_json() == [transactions[0]]
+
+    # Filtering must not remove records or change inventory.
+    history = client.get("/transactions")
+    assert history.status_code == 200
+    assert history.get_json() == transactions
+
+    stock = client.get(f"/products/{product['id']}/stock-level")
+    assert stock.status_code == 200
+    assert stock.get_json()["quantity_on_hand"] == 16
