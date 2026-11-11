@@ -1,3 +1,6 @@
+from unittest.mock import patch
+
+
 def _create_a3_supplier(client):
     response = client.post("/suppliers", json={
         "name": "A3 Supplier",
@@ -142,3 +145,80 @@ def test_transaction_history_filters_by_supplier(client):
     stock = client.get(f"/products/{product['id']}/stock-level")
     assert stock.status_code == 200
     assert stock.get_json()["quantity_on_hand"] == 16
+
+
+def _create_notification_product(client, sku):
+    response = client.post("/products", json={
+        "name": "A3 Notification Product",
+        "sku": sku,
+        "unit_price": 10,
+        "quantity_on_hand": 12,
+        "reorder_level": 10,
+    })
+    assert response.status_code == 201
+    return response.get_json()
+
+
+def test_low_stock_notification_failure_stub(client, monkeypatch):
+    """A failed notification must preserve the successful stock transaction."""
+    product = _create_notification_product(client, "NOTIFY-FAIL-001")
+    monkeypatch.setattr(
+        "app.routes.transactions.send_notification",
+        lambda recipient, subject, message: False,
+    )
+
+    response = client.post("/transactions", json={
+        "product_id": product["id"],
+        "type": "OUT",
+        "quantity": 5,
+    })
+
+    assert response.status_code == 201
+    transaction = response.get_json()
+    assert transaction["notification_sent"] is False
+    assert transaction["product_id"] == product["id"]
+    assert transaction["type"] == "OUT"
+    assert transaction["quantity"] == 5
+
+    stock = client.get(f"/products/{product['id']}/stock-level")
+    assert stock.status_code == 200
+    assert stock.get_json()["quantity_on_hand"] == 7
+
+    history = client.get("/transactions").get_json()
+    assert len(history) == 1
+    assert history[0]["id"] == transaction["id"]
+    assert history[0]["product_id"] == product["id"]
+    assert history[0]["type"] == "OUT"
+    assert history[0]["quantity"] == 5
+
+
+def test_no_notification_above_reorder_level_mock(client):
+    """Stock above the reorder level must not trigger a notification."""
+    product = _create_notification_product(client, "NOTIFY-SKIP-001")
+
+    with patch(
+        "app.routes.transactions.send_notification", return_value=True
+    ) as mock_send:
+        response = client.post("/transactions", json={
+            "product_id": product["id"],
+            "type": "OUT",
+            "quantity": 1,
+        })
+
+    mock_send.assert_not_called()
+    assert response.status_code == 201
+    transaction = response.get_json()
+    assert transaction["product_id"] == product["id"]
+    assert transaction["type"] == "OUT"
+    assert transaction["quantity"] == 1
+
+    stock = client.get(f"/products/{product['id']}/stock-level")
+    assert stock.status_code == 200
+    assert stock.get_json()["quantity_on_hand"] == 11
+
+    history = client.get("/transactions").get_json()
+    assert len(history) == 1
+    assert history[0]["id"] == transaction["id"]
+    assert history[0]["product_id"] == product["id"]
+    assert history[0]["type"] == "OUT"
+    assert history[0]["quantity"] == 1
