@@ -5,3 +5,7 @@ __pycache__/
 # Coverage reports
 .coverage
 htmlcov/
+# Browser test outputs
+test-results/
+playwright-report/
+flask-e2e.log
