@@ -29,5 +29,54 @@ jobs:
       - name: Install dependencies
         run: python -m pip install -r requirements.txt
 
-      - name: Run full test suite with coverage
-        run: python -m pytest -v --cov=app --cov-report=term-missing --cov-fail-under=90
+      - name: Run application regression tests with coverage
+        run: python -m pytest -v --ignore=tests/e2e --cov=app --cov-report=term-missing --cov-fail-under=90
+
+  e2e:
+    runs-on: ubuntu-latest
+
+    defaults:
+      run:
+        working-directory: inventory-management
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v7
+
+      - name: Set up Python
+        uses: actions/setup-python@v7
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: python -m pip install -r requirements.txt
+
+      - name: Install Chromium
+        run: python -m playwright install --with-deps chromium
+
+      - name: Start Flask and wait for HTTP readiness
+        run: |
+          python -m flask --app run:app run --host 127.0.0.1 --port 5000 > flask-e2e.log 2>&1 &
+          python - <<'PY'
+          import time
+          import urllib.error
+          import urllib.request
+
+          for attempt in range(30):
+              try:
+                  with urllib.request.urlopen("http://127.0.0.1:5000/", timeout=2) as response:
+                      if response.status == 200:
+                          break
+              except (urllib.error.URLError, TimeoutError):
+                  pass
+              time.sleep(1)
+          else:
+              raise SystemExit("Flask did not become ready on port 5000")
+          PY
+
+      - name: Run browser E2E tests
+        run: python -m pytest tests/e2e -v --browser chromium --screenshot only-on-failure --tracing retain-on-failure
+
+      - name: Show Flask log after failure
+        if: failure()
+        run: cat flask-e2e.log
